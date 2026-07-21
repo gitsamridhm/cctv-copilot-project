@@ -85,3 +85,10 @@ if __name__ == "__main__":
         output_json_path="../output/events_cam0.json",
         stride=2
     )
+if __name__ == "__main__":
+    run_event_pipeline(
+        camera_id="cam_1",
+        image_folder="../data/Image_subsets/C2",
+        output_json_path="../output/events_cam1.json",
+        stride=2   # or whatever stride you're currently using
+    )
