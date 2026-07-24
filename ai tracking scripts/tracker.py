@@ -1,8 +1,8 @@
-import numpy as np
+ import numpy as np
 
 
 class CentroidTracker:
-    def __init__(self, max_disappeared=10, max_distance=250):
+    def __init__(self, max_disappeared=10, max_distance=80):
         self.next_id = 0
         self.objects = {}
         self.bboxes = {}
