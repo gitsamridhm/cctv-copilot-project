@@ -9,7 +9,7 @@ from carried_object import detect_carried_object, COLOR_RANGES
 
 def run_event_pipeline(camera_id, image_folder, output_json_path, stride=10):
     # Initialize tracker with our validated parameters
-    tracker = CentroidTracker(max_distance=250, max_disappeared=3)
+    tracker = CentroidTracker(max_distance=80, max_disappeared=3)
 
     # Get all frames in order
     all_frame_paths = sorted(glob.glob(os.path.join(image_folder, "*.png")))
