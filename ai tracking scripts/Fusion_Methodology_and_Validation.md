@@ -51,7 +51,25 @@ The above was validated against WILDTRACK's pixel-perfect human-annotated ground
 
 ---
 
-## 4. Known Limitations
+## 4. Re-Validation After A's Tracker Fix
+
+After the Section 3 findings were shared with the team, Person A made changes to `tracker.py` and regenerated both event files (`events_cam0.json`, `events_cam1.json`). Re-running the identical validation scripts against the new data:
+
+| Metric | Before | After |
+|---|---|---|
+| Tracks analyzed | 243 | 434 |
+| Average purity | 46.5% | 54.4% |
+| Tracks ≥90% pure | 7.0% | 14.5% |
+| Tracks <70% pure | 80.7% | 69.8% |
+| Fusion precision vs. ground truth | 14.4% | 16.5% |
+
+**Assessment:** every metric moved in the right direction, confirming the fix had a real, measurable effect rather than being noise. The near-doubling of total track count (243→434) suggests the tracker's matching distance was tightened, producing more numerous, shorter, and on-average purer tracks.
+
+However, **the majority of tracks (69.8%) are still likely identity-switched**, and fusion precision (16.5%) remains far below what could be trusted for a live, uncaveated demo. Critically, the worst-case tail did not improve: tracks blending 30+ distinct real people were still observed after the fix. This confirms the Section 2 finding that some identity mixing stems from genuine spatial ambiguity (real people standing centimeters apart) rather than purely a tracker-tuning problem — it is partly an inherent property of how dense this scene is.
+
+---
+
+## 5. Known Limitations
 
 - **WILDTRACK's overlapping-camera geometry** stands in for the brief's "distinct, non-overlapping feeds" scenario. The pipeline itself doesn't require disjoint cameras — it treats each `camera_id` independently — but this is a real adaptation worth stating plainly.
 - **Object detector currently supports only 2 classes** (black suitcase, blue jacket) rather than the 3 originally planned, and no red/backpack combination exists in real output — this limits the color/class signal's power as a disambiguation tool, and limits demo query variety.
@@ -61,15 +79,15 @@ The above was validated against WILDTRACK's pixel-perfect human-annotated ground
 
 ---
 
-## 5. Path Forward
+## 6. Path Forward
 
-- Reduce the single-camera tracker's `max_distance` or otherwise improve track continuity (owned by Person A) — this is the single highest-leverage fix, since fusion accuracy is bottlenecked upstream of anything in this module.
-- Expand the object detector's class/color range to strengthen the attribute-based tiebreaker.
-- If time-constrained before the demo: present on a shorter or less crowded clip where single-camera tracking is more likely to hold up, while documenting this limitation transparently with the numbers above — this is a defensible, evidence-based "path forward" story rather than a hidden gap.
+- ~~Reduce the single-camera tracker's `max_distance` or otherwise improve track continuity~~ — attempted by Person A (see Section 4): produced a real but modest improvement (14.4% → 16.5% fusion precision). Further tuning along this axis likely has diminishing returns given the genuine spatial-ambiguity floor identified in Section 2.
+- Expand the object detector's class/color range to strengthen the attribute-based tiebreaker — still the most promising unexplored lever, since attribute agreement is currently only a 2-class signal.
+- **Recommended given time constraints:** present on a shorter or less crowded clip where single-camera tracking is more likely to hold up, while documenting this limitation transparently with the before/after numbers above — this is a defensible, evidence-based "path forward" story rather than a hidden gap.
 
 ---
 
-## 6. Quick Reference — Validation Scripts
+## 7. Quick Reference — Validation Scripts
 
 | Script | Purpose |
 |---|---|
