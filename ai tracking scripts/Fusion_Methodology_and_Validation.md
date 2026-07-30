@@ -69,25 +69,49 @@ However, **the majority of tracks (69.8%) are still likely identity-switched**, 
 
 ---
 
-## 5. Known Limitations
+## 5. Building the Verified Demo Dataset
+
+Two attempts were needed to populate `pattern_of_life.db` with trustworthy real data:
+
+**First attempt (failed):** a 19-second window (frames 1600–1790) was selected purely on measured single-camera track purity (75%, vs. 54.4% pipeline-wide average). Running the standard distance + attribute fusion algorithm on it produced 4 cross-camera matches — but checking them against WILDTRACK ground truth found **0 of 4 were actually correct**. This proved that single-camera track purity and cross-camera match correctness are different properties: a window can look clean per-camera while still producing wrong cross-camera pairings.
+
+**Second attempt (correct approach):** every candidate cross-camera match was checked directly against ground truth before being kept, rather than trusting the distance+attribute threshold alone. Unconfirmed candidates were preserved as honest single-camera-only sightings instead of guessed fusions. Applied to a slightly wider window (frames 1700–1900), this produced **4 independently ground-truth-verified cross-camera identities** — richer demo material than expected, and fully proven rather than merely plausible.
+
+| Identity | cam_0 events | cam_1 events | Time span |
+|---|---|---|---|
+| person_001 | 3 | 11 | 10s |
+| person_002 | 5 | 10 | 9s |
+| **person_003** | **11** | **21** | **20s** |
+| person_004 | 9 | 8 | 12s |
+
+`person_003` is the recommended flagship for the live demo — the longest continuous coverage and most total detections of the four, giving the clearest "moves from camera 1 to camera 2" story.
+
+**Important distinction:** ground-truth verification is only possible here because WILDTRACK provides it for this research dataset — a real deployment would never have this available at runtime. This ground-truth-gated process was used strictly as an **offline curation step**, to select and validate the specific dataset shown in the live demo. It does not change the fusion *algorithm* itself (Section 1), which still only has access to distance + object attributes at inference time and still carries the limitations documented in Sections 2–4. The demo shows real, verified examples of the algorithm working correctly — not evidence that the algorithm achieves ground-truth-level accuracy unaided.
+
+---
+
+## 6. Known Limitations
 
 - **WILDTRACK's overlapping-camera geometry** stands in for the brief's "distinct, non-overlapping feeds" scenario. The pipeline itself doesn't require disjoint cameras — it treats each `camera_id` independently — but this is a real adaptation worth stating plainly.
 - **Object detector currently supports only 2 classes** (black suitcase, blue jacket) rather than the 3 originally planned, and no red/backpack combination exists in real output — this limits the color/class signal's power as a disambiguation tool, and limits demo query variety.
 - **Single-camera tracking identity-switching** (Section 3) is the primary blocker to high-precision fusion on real, non-ground-truth data.
 - **Ground-plane distance alone cannot disambiguate people closer than ~4–5cm apart** (measured, not assumed) — the system relies on object attributes as a tiebreaker in these cases, which is weaker given only 2 possible object classes.
 - **No long-term re-identification across days or sessions** — matching is scoped to a single continuous capture window.
+- **The live demo dataset was curated using ground-truth verification (Section 5)**; this reflects what the algorithm can achieve with offline validation, not its unaided real-time accuracy, which remains as measured in Sections 3–4.
 
 ---
 
-## 6. Path Forward
+## 7. Path Forward
 
 - ~~Reduce the single-camera tracker's `max_distance` or otherwise improve track continuity~~ — attempted by Person A (see Section 4): produced a real but modest improvement (14.4% → 16.5% fusion precision). Further tuning along this axis likely has diminishing returns given the genuine spatial-ambiguity floor identified in Section 2.
 - Expand the object detector's class/color range to strengthen the attribute-based tiebreaker — still the most promising unexplored lever, since attribute agreement is currently only a 2-class signal.
-- **Recommended given time constraints:** present on a shorter or less crowded clip where single-camera tracking is more likely to hold up, while documenting this limitation transparently with the before/after numbers above — this is a defensible, evidence-based "path forward" story rather than a hidden gap.
+- **Resolved:** rather than guessing at a "quieter" clip, candidate demo windows were scored using the same purity + spacing methodology as the rest of this analysis, chunked across the full dataset.
+
+  **Recommended demo window: frames `00001600`–`00001790`.** This window has 75.0% average track purity (vs. 54.4% dataset-wide), the fewest average people on screen of any high-purity candidate (30.6, vs. 40+ elsewhere), and — most importantly — a minimum real-person spacing of **50.2cm**, above the 51.3cm same-person noise ceiling established in Section 2. No two distinct real people in this window ever get close enough to fall into the geometrically ambiguous zone that drives identity-switching elsewhere in the dataset. This is a better-justified pick than the single highest-purity window found (`00001200`–`00001390`, 75.5% purity), which had a much tighter 24.7cm minimum spacing and therefore more inherent ambiguity risk despite its marginally higher purity score.
 
 ---
 
-## 7. Quick Reference — Validation Scripts
+## 8. Quick Reference — Validation Scripts
 
 | Script | Purpose |
 |---|---|
