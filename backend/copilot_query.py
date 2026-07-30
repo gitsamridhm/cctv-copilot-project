@@ -1,277 +1,188 @@
-"""
-Role C — Copilot & Retrieval Backend
-Phase 2: Dual-stage retrieval engine using Groq LLM + Chroma vector search.
-
-Pipeline:
-    Step 2.1  →  Stage 1 LLM: Metadata Parser (NL → structured JSON)
-    Step 2.2  →  Hybrid Retrieval (Chroma metadata $and/$eq + semantic vector search)
-    Step 2.3  →  Stage 2 LLM: Generation Pass (matched events → factual summary)
-    Step 2.4  →  Public entry point: run_copilot_query(user_query)
-
-Usage:
-    python copilot_query.py "Show every time someone carrying a red backpack was near Camera 3 after 6pm"
-
-    # Or import in Person D's Streamlit dashboard:
-    from copilot_query import run_copilot_query
-    result = run_copilot_query(st.text_input("Ask the copilot..."))
-    st.write(result["summary"])
-"""
-
 import os
 import json
 import re
 import chromadb
-from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Configuration ────────────────────────────────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CHROMA_PATH = os.path.join(BASE_DIR, "chroma_db")
+COLLECTION_NAME = "cctv_events"
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = "llama-3.3-70b-versatile"
-PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
-COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "pattern_of_life")
 
-# ── Clients ──────────────────────────────────────────────────────────────────
-groq_client = Groq(api_key=GROQ_API_KEY)
-chroma_client = chromadb.PersistentClient(path=PERSIST_DIR)
-collection = chroma_client.get_or_create_collection(name=COLLECTION_NAME)
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# STEP 2.1 — STAGE 1 LLM: THE METADATA PARSER
-# ═════════════════════════════════════════════════════════════════════════════
-
-STAGE1_SYSTEM_PROMPT = """You are an analyst assistant for a CCTV pattern-of-life system.
-Extract time range, camera ID, and object attributes from the analyst's question as structured JSON.
-
-Never infer identity beyond what's in the object/appearance data provided.
-Do not speculate. If a field is missing, return null.
-
-Extract these fields:
-- camera_id: string or null — e.g. "cam_03" (convert "Camera 3" → "cam_03")
-- time_after: string or null — HH:MM in 24h format
-- time_before: string or null — HH:MM in 24h format
-- object_class: string or null — one of: backpack, tote_bag, briefcase, jacket, umbrella, none
-- object_color: string or null — e.g. "red", "blue", "black", "yellow", "green"
-- negate_object: boolean — true if analyst asks for people WITHOUT a carried object
-- search_text: string — short rephrased query for semantic vector search
-
-Respond ONLY with raw JSON. No explanation, no markdown, no code fences."""
-
-
-def parse_analyst_query(user_query: str) -> dict:
-    """
-    Step 2.1: Takes the analyst's raw string input and passes it to the Groq LLM.
-    The LLM acts as a deterministic parser, outputting only raw JSON with
-    structured filters extracted from the natural-language query.
-    """
-    response = groq_client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": STAGE1_SYSTEM_PROMPT},
-            {"role": "user", "content": f'Analyst query: "{user_query}"'},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0,  # deterministic — no creative guessing
-    )
-    return json.loads(response.choices[0].message.content)
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# STEP 2.2 — HYBRID RETRIEVAL FUNCTION
-# ═════════════════════════════════════════════════════════════════════════════
-
-def build_chroma_where(filters: dict):
-    """
-    Constructs a Chroma metadata query using native logical operators ($and, $eq).
-    Hard-filters on camera_id, object_class, object_color, and negate_object
-    so that "Camera 3" returns ONLY cam_03 events, while the semantic query
-    ("crimson bag") still matches "red backpack" via vector similarity.
-    """
-    conditions = []
-    if filters.get("camera_id"):
-        conditions.append({"camera_id": {"$eq": filters["camera_id"]}})
-    if filters.get("object_class"):
-        conditions.append({"object_class": {"$eq": filters["object_class"]}})
-    if filters.get("object_color"):
-        conditions.append({"object_color": {"$eq": filters["object_color"]}})
-    if filters.get("negate_object"):
-        conditions.append({"object_class": {"$eq": "none"}})
-
-    if len(conditions) == 0:
+def get_groq_client():
+    if not GROQ_API_KEY:
         return None
-    if len(conditions) == 1:
-        return conditions[0]
-    return {"$and": conditions}
+    try:
+        from groq import Groq
+        return Groq(api_key=GROQ_API_KEY)
+    except Exception:
+        return None
 
+def parse_query_stage1(query_text: str) -> dict:
+    """Parses natural language query into filter metadata dictionary."""
+    client = get_groq_client()
+    
+    heuristic_filters = {}
+    
+    # Check for track_id/person_id patterns
+    p_match = re.search(r'person[_\s]?(\d+)', query_text.lower())
+    if p_match:
+        num = int(p_match.group(1))
+        heuristic_filters["track_id"] = f"person_{num:03d}"
+        
+    # Check for camera IDs
+    cam_match = re.search(r'(?:camera|cam)[_\s]?(\d+)', query_text.lower())
+    if cam_match:
+        heuristic_filters["camera_id"] = f"cam_{int(cam_match.group(1))}"
+        
+    # Check for colors
+    for color in ["black", "blue", "red", "green", "white", "yellow", "gray"]:
+        if color in query_text.lower():
+            heuristic_filters["object_color"] = color
+            break
 
-def hybrid_retrieve(filters: dict, n_results: int = 20) -> list:
-    """
-    Step 2.2: Parses the JSON from Step 2.1 and queries Chroma with BOTH
-    a semantic text search (vector similarity) AND hard metadata filters ($and/$eq).
-    Also applies post-retrieval time-range filtering since Chroma's where clause
-    doesn't natively support time comparisons.
-    """
-    search_text = filters.get("search_text", "")
-    where_clause = build_chroma_where(filters)
+    # Check for carried object
+    for obj in ["suitcase", "jacket", "bag", "backpack", "tote_bag", "briefcase", "umbrella"]:
+        if obj in query_text.lower():
+            heuristic_filters["object_class"] = obj.replace(" ", "_")
+            break
 
-    results = collection.query(
-        query_texts=[search_text] if search_text else None,
-        n_results=n_results,
-        where=where_clause,
-    )
+    if not client:
+        return heuristic_filters
 
-    events = []
-    time_after = filters.get("time_after")
-    time_before = filters.get("time_before")
+    prompt = f"""
+You are a CCTV video analytics query parser. Convert the user query into structured search parameters.
+Extract the following JSON fields if present in the user query:
+- track_id: (e.g. "person_001", "person_003")
+- camera_id: (e.g. "cam_0", "cam_1")
+- object_class: (e.g. "suitcase", "jacket", "backpack")
+- object_color: (e.g. "black", "blue", "red")
+- start_time: ISO timestamp substring or time (e.g. "18:02")
+- end_time: ISO timestamp substring or time (e.g. "18:03")
 
-    for doc, meta, dist in zip(
-        results["documents"][0] if results["documents"] else [],
-        results["metadatas"][0] if results["metadatas"] else [],
-        results["distances"][0] if results["distances"] else [],
-    ):
-        # Post-retrieval time filtering (Chroma where doesn't support time ranges)
-        if time_after or time_before:
-            ts = meta.get("timestamp", "")
-            if ts:
-                hour_min = ts[11:16]  # Extract HH:MM from ISO timestamp
-                if time_after and hour_min < time_after:
-                    continue
-                if time_before and hour_min > time_before:
-                    continue
+User query: "{query_text}"
 
-        events.append({
-            "document": doc,
-            "metadata": meta,
-            "distance": dist,
-        })
+Respond ONLY with a valid JSON object. Do not include markdown or formatting blocks outside JSON.
+"""
 
-    return events
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# STEP 2.3 — STAGE 2 LLM: THE GENERATION PASS
-# ═════════════════════════════════════════════════════════════════════════════
-
-STAGE2_SYSTEM_PROMPT = """Based on the following verified tracking logs, synthesize a highly concise,
-factual summary answering the analyst's query.
-
-Rules:
-- Provide specific timestamps and camera identifiers.
-- Reference track IDs when mentioning individuals.
-- Never infer or invent names, genders, or intent.
-- If data is ambiguous, state that clearly to the analyst.
-- If no events match, say so explicitly.
-- Keep it under 200 words."""
-
-
-def generate_summary(user_query: str, matched_events: list) -> str:
-    """
-    Step 2.3: Takes the raw metadata matches from Chroma, formats them into a
-    clean text block, and passes it back to Groq with a generation prompt to
-    produce a factual, concise summary for the analyst.
-    """
-    if not matched_events:
-        events_text = "No matching events found."
-    else:
-        events_text = "\n".join(
-            f"[{e['metadata'].get('track_id', 'unknown')}] {e['document']}"
-            for e in matched_events
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0
         )
+        content = response.choices[0].message.content.strip()
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        parsed = json.loads(content.strip())
+        
+        # Merge heuristics for missing critical fields
+        for k, v in heuristic_filters.items():
+            if k not in parsed or not parsed[k]:
+                parsed[k] = v
+                
+        return {k: v for k, v in parsed.items() if v}
+    except Exception:
+        return heuristic_filters
 
-    response = groq_client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": STAGE2_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f'Analyst question: "{user_query}"\n\n'
-                    f"Matching tracking logs ({len(matched_events)} results):\n{events_text}"
-                ),
-            },
-        ],
-        temperature=0.3,  # slightly creative but grounded in the data
-    )
-    return response.choices[0].message.content
+def build_chroma_where(filters: dict) -> dict:
+    """Builds a valid ChromaDB where clause supporting metadata fields and timestamps."""
+    conditions = []
 
+    if "track_id" in filters and filters["track_id"]:
+        conditions.append({"track_id": filters["track_id"]})
 
-# ═════════════════════════════════════════════════════════════════════════════
-# STEP 2.4 — PUBLIC ENTRY POINT (for Person D's Streamlit dashboard)
-# ═════════════════════════════════════════════════════════════════════════════
+    if "camera_id" in filters and filters["camera_id"]:
+        conditions.append({"camera_id": filters["camera_id"]})
 
-def run_copilot_query(user_query: str) -> dict:
-    """
-    Single entry point for Person D's dashboard.
-    Orchestrates the full dual-stage pipeline:
+    if "object_class" in filters and filters["object_class"]:
+        conditions.append({"object_class": filters["object_class"]})
 
-        user_query → [Stage 1: Groq parser] → filters
-                   → [Step 2.2: Chroma hybrid retrieval] → matched events
-                   → [Stage 2: Groq summarizer] → final summary
+    if "object_color" in filters and filters["object_color"]:
+        conditions.append({"object_color": filters["object_color"]})
 
-    Returns a dict with: query, parsed_filters, matched_events, summary, match_count.
-    """
-    # Step 2.1: Parse natural language → structured JSON filters
-    filters = parse_analyst_query(user_query)
-    if filters.get("camera_id"):
-        cam = str(filters["camera_id"]).lower()
-        match = re.search(r'\d+' , cam)
-        if match:
-            cam_num = int(match.group())
-            filters["camera_id"] = f"cam_{cam_num}"
+    if "start_time" in filters and filters["start_time"]:
+        conditions.append({"timestamp": {"$gte": filters["start_time"]}})
+    if "end_time" in filters and filters["end_time"]:
+        conditions.append({"timestamp": {"$lte": filters["end_time"]}})
 
-    # Step 2.2: Hybrid retrieval (semantic + metadata filtering)
-    matched = hybrid_retrieve(filters)
+    if not conditions:
+        return {}
+    elif len(conditions) == 1:
+        return conditions[0]
+    else:
+        return {"$and": conditions}
 
-    # Step 2.3: Generate factual summary from matched events
-    summary = generate_summary(user_query, matched)
+def query_pipeline(query_text: str, n_results: int = 50):
+    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+    collection = chroma_client.get_collection(name=COLLECTION_NAME)
+
+    parsed_filters = parse_query_stage1(query_text)
+    where_clause = build_chroma_where(parsed_filters)
+
+    query_params = {
+        "query_texts": [query_text],
+        "n_results": n_results
+    }
+    if where_clause:
+        query_params["where"] = where_clause
+
+    try:
+        results = collection.query(**query_params)
+    except Exception:
+        # Fallback to pure semantic search if strict where clause fails
+        results = collection.query(query_texts=[query_text], n_results=n_results)
+
+    matched_docs = results["documents"][0] if results and results.get("documents") else []
+    matched_meta = results["metadatas"][0] if results and results.get("metadatas") else []
+
+    client = get_groq_client()
+
+    if not client:
+        llm_summary = "LLM summary unavailable — no API key configured"
+    else:
+        events_str = "\n".join([f"- {doc}" for doc in matched_docs[:25]])
+        summary_prompt = f"""
+You are a CCTV Analytics Assistant. Summarize the following retrieved video surveillance events to directly answer the user query.
+
+Instructions:
+- Explicitly reference cross-camera sightings and unified person IDs (e.g. person_003) when the matched events span multiple cameras (e.g. cam_0 and cam_1).
+- Provide a clear chronological summary or movement timeline if applicable.
+- Keep the response concise and accurate based only on the provided evidence.
+
+User Query: "{query_text}"
+
+Retrieved Events:{events_str if events_str else "No events found."}
+"""
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": summary_prompt}],
+                temperature=0.2
+            )
+            llm_summary = response.choices[0].message.content.strip()
+        except Exception as e:
+            llm_summary = f"LLM summary generation failed: {str(e)}"
 
     return {
-        "query": user_query,
-        "parsed_filters": filters,
-        "matched_events": matched,
-        "summary": summary,
-        "match_count": len(matched),
+        "query": query_text,
+        "parsed_filters": parsed_filters,
+        "matched_events_count": len(matched_docs),
+        "events": matched_meta,
+        "documents": matched_docs,
+        "summary": llm_summary
     }
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CLI ENTRY POINT
-# ═════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys
-
-    query = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else "Show every time someone carrying a red backpack was near Camera 3 after 6pm"
-    )
-
-    print("=" * 70)
-    print(f"ANALYST QUERY: {query}")
-    print("=" * 70)
-
-    result = run_copilot_query(query)
-
-    print(f"\n{'─' * 70}")
-    print("STEP 2.1 — STAGE 1 LLM OUTPUT (PARSED FILTERS):")
-    print("─" * 70)
-    print(json.dumps(result["parsed_filters"], indent=2))
-
-    print(f"\n{'─' * 70}")
-    print(f"STEP 2.2 — HYBRID RETRIEVAL RESULTS ({result['match_count']} matches):")
-    print("─" * 70)
-    for e in result["matched_events"]:
-        print(f"  [{e['metadata']['track_id']}] {e['document']}")
-        print(f"    camera={e['metadata']['camera_id']}  "
-              f"time={e['metadata']['timestamp']}  "
-              f"color={e['metadata']['object_color']}  "
-              f"distance={e['distance']:.4f}")
-
-    print(f"\n{'─' * 70}")
-    print("STEP 2.3 — STAGE 2 LLM OUTPUT (COPILOT SUMMARY):")
-    print("─" * 70)
-    print(result["summary"])
-    print()
+    q = sys.argv[1] if len(sys.argv) > 1 else "Where was person_003?"
+    res = query_pipeline(q)
+    print(f"\n--- Query: {res['query']} ---")
+    print(f"Parsed Filters: {res['parsed_filters']}")
+    print(f"Matched Events: {res['matched_events_count']}")
+    print(f"\nLLM Summary:\n{res['summary']}\n")
