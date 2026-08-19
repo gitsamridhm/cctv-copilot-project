@@ -1,3 +1,8 @@
+# DEPRECATED — first-attempt demo-window writer, produced 0/4 correct cross-camera
+# matches (distance-only scoring, no ground-truth verification). Kept for history
+# only. Do not run this against backend/db/pattern_of_life.db — it will overwrite
+# the real, ground-truth-verified data. Use write_verified_demo_window_to_db.py instead.
+
 import os, json, sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta

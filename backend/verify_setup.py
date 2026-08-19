@@ -10,7 +10,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
-COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "pattern_of_life")
+# "cctv_events" is the collection copilot_query.py / seed_from_db.py actually use.
+# (There's also a stale "pattern_of_life"-named collection left over in chroma_db
+# from an earlier schema — it's not read by the running app, don't verify against it.)
+COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "cctv_events")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 passed = 0
@@ -115,15 +118,15 @@ if collection:
         print(f'       Document:  "{doc}"')
         print(f"       Metadata:  {meta}")
     print("\n  Embedding verification - semantic search test:")
-    results = collection.query(query_texts=["crimson bag"], n_results=3)
-    print(f"     Query: 'crimson bag' (should match 'red backpack')")
+    results = collection.query(query_texts=["dark suitcase"], n_results=3)
+    print(f"     Query: 'dark suitcase' (nearest-neighbor semantic match, not an exact-label test)")
     for i, (doc, dist) in enumerate(zip(results["documents"][0], results["distances"][0])):
         print(f'       Match {i+1} [distance={dist:.4f}]: "{doc}"')
     check("Semantic search returns relevant results", len(results["documents"][0]) > 0)
-    print("\n  Metadata filter verification - camera_id='cam_03':")
-    filtered = collection.get(where={"camera_id": "cam_03"})
-    print(f"     Found {len(filtered['documents'])} events on Camera 3")
-    for doc in filtered["documents"]:
+    print("\n  Metadata filter verification - camera_id='cam_0':")
+    filtered = collection.get(where={"camera_id": "cam_0"})
+    print(f"     Found {len(filtered['documents'])} events on cam_0")
+    for doc in filtered["documents"][:3]:
         print(f'       - "{doc}"')
     check("Metadata filtering works (camera_id filter)", len(filtered["documents"]) > 0)
 

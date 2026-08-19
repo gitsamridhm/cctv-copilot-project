@@ -21,6 +21,16 @@ def get_groq_client():
     except Exception:
         return None
 
+# Values the LLM sometimes emits for "no specific filter" (e.g. camera_id: "*"
+# for "across all cameras") that must not be passed through as literal filters.
+INVALID_FILTER_VALUES = {"*", "all", "any", "none", "unknown", "n/a", ""}
+
+def _drop_wildcard_filters(filters: dict) -> dict:
+    return {
+        k: v for k, v in filters.items()
+        if v and str(v).strip().lower() not in INVALID_FILTER_VALUES
+    }
+
 def parse_query_stage1(query_text: str) -> dict:
     """Parses natural language query into filter metadata dictionary."""
     client = get_groq_client()
@@ -51,7 +61,7 @@ def parse_query_stage1(query_text: str) -> dict:
             break
 
     if not client:
-        return heuristic_filters
+        return _drop_wildcard_filters(heuristic_filters)
 
     prompt = f"""
 You are a CCTV video analytics query parser. Convert the user query into structured search parameters.
@@ -86,9 +96,9 @@ Respond ONLY with a valid JSON object. Do not include markdown or formatting blo
             if k not in parsed or not parsed[k]:
                 parsed[k] = v
                 
-        return {k: v for k, v in parsed.items() if v}
+        return _drop_wildcard_filters(parsed)
     except Exception:
-        return heuristic_filters
+        return _drop_wildcard_filters(heuristic_filters)
 
 def build_chroma_where(filters: dict) -> dict:
     """Builds a valid ChromaDB where clause supporting metadata fields and timestamps."""

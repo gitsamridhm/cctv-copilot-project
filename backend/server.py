@@ -21,9 +21,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DB_PATH = os.path.join(BASE_DIR, "db", "pattern_of_life.db")
 C1_IMAGES_DIR = os.path.join(PROJECT_ROOT, "data", "Image_subsets", "C1")
+C2_IMAGES_DIR = os.path.join(PROJECT_ROOT, "data", "Image_subsets", "C2")
 
 if os.path.exists(C1_IMAGES_DIR):
     app.mount("/frames/C1", StaticFiles(directory=C1_IMAGES_DIR), name="c1_frames")
+if os.path.exists(C2_IMAGES_DIR):
+    app.mount("/frames/C2", StaticFiles(directory=C2_IMAGES_DIR), name="c2_frames")
 
 def get_db_connection():
     if not os.path.exists(DB_PATH):
@@ -106,7 +109,7 @@ def get_person_events(track_id: str):
 
 @app.get("/api/frames/{camera_id}/{frame_ref}")
 def serve_frame(camera_id: str, frame_ref: str):
-    if camera_id in ["cam_1", "C1"]:
+    if camera_id in ["cam_0", "C0"]:
         filename = os.path.basename(frame_ref)
         if not filename.endswith(".png") and not filename.endswith(".jpg"):
             filename += ".png"
@@ -115,12 +118,23 @@ def serve_frame(camera_id: str, frame_ref: str):
         if os.path.exists(file_path):
             return FileResponse(file_path)
         else:
+            raise HTTPException(status_code=404, detail=f"Frame file {filename} not found on cam_0")
+    elif camera_id in ["cam_1", "C2"]:
+        if not os.path.exists(C2_IMAGES_DIR):
+            raise HTTPException(
+                status_code=503,
+                detail="cam_1 source frames not available in this environment (WILDTRACK C2 was not provided)."
+            )
+
+        filename = os.path.basename(frame_ref)
+        if not filename.endswith(".png") and not filename.endswith(".jpg"):
+            filename += ".png"
+
+        file_path = os.path.join(C2_IMAGES_DIR, filename)
+        if os.path.exists(file_path):
+            return FileResponse(file_path)
+        else:
             raise HTTPException(status_code=404, detail=f"Frame file {filename} not found on cam_1")
-    elif camera_id in ["cam_0", "C0"]:
-        raise HTTPException(
-            status_code=404, 
-            detail="Frame images for camera 0 (cam_0) are not currently available in storage."
-        )
     else:
         raise HTTPException(status_code=404, detail=f"Unknown camera_id: {camera_id}")
 

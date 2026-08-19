@@ -8,3 +8,7 @@ venv/
 data/Image_subsets/**/*.png
 *.zip
 /data/
+.pytest_cache/
+.streamlit/secrets.toml
+node_modules/
+ai tracking scripts/yolov8n.pt

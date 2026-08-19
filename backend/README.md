@@ -12,17 +12,25 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Phase 1: Initialize & Seed Chroma (Day 1)
+## Phase 1: Seed Chroma from the SQLite events DB
 
 ```bash
-python seed_chroma.py
+python seed_from_db.py
 ```
 
-## Phase 2: Query the Copilot (Day 2)
+Indexes `db/pattern_of_life.db` into the `cctv_events` Chroma collection — this is the
+one `copilot_query.py` actually queries.
+
+## Phase 2: Query the Copilot
 
 ```bash
-python copilot_query.py "Show every time someone carrying a red backpack was near Camera 3 after 6pm"
+python demo_queries.py
 ```
+
+Runs 5 canned natural-language queries through `query_pipeline()` in `copilot_query.py`
+for a quick smoke test. There is no standalone CLI entry point in `copilot_query.py`
+itself — import `query_pipeline(text)` directly to use it from other code (e.g.
+`server.py`'s `/api/query` endpoint does exactly this).
 
 ## Architecture
 
@@ -43,10 +51,12 @@ Analyst Answer <-- [Groq Stage 2: Summarizer] <-- [Chroma Vector + Metadata Sear
 python verify_setup.py
 ```
 
-## Connect to Person D's Dashboard
+## Serve to the frontend
 
-```python
-from copilot_query import run_copilot_query
-result = run_copilot_query(st.text_input("Ask the copilot..."))
-st.write(result["summary"])
+```bash
+python server.py
 ```
+
+Starts the FastAPI app (`/api/query`, `/api/identities`, `/api/person/{track_id}`,
+`/api/frames/{camera_id}/{frame_ref}`) that the real React frontend
+(`frontend/src/app/App.tsx`) calls.

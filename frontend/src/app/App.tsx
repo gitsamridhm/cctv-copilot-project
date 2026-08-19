@@ -9,7 +9,6 @@ import {
   CheckCircle,
   XCircle,
   ExternalLink,
-  Eye,
   EyeOff,
   Activity,
   Lock,
@@ -20,19 +19,61 @@ import {
   Map,
   AlignLeft,
   AlertTriangle,
+  AlertCircle,
   Clock,
-  Zap,
   Search,
   SlidersHorizontal,
+  Loader2,
+  Users,
 } from "lucide-react";
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+// ── Backend API types (mirrors backend/server.py response shapes) ──────────────
 
-interface CameraData {
+interface QueryEventMeta {
+  camera_id: string;
+  track_id: string;
+  object_class: string;
+  object_color: string;
+  confidence: number;
+  timestamp: string;
+  frame_ref: string;
+}
+
+interface QueryResponse {
+  query: string;
+  parsed_filters: Record<string, string>;
+  matched_events_count: number;
+  events: QueryEventMeta[];
+  documents: string[];
+  summary: string;
+}
+
+interface IdentitySummary {
+  track_id: string;
+  total_events: number;
+  first_seen: string;
+  last_seen: string;
+  cameras: string[];
+  carried_objects: string[];
+}
+
+interface PersonEvent {
+  id: string;
+  track_id: string;
+  camera_id: string;
+  timestamp: string;
+  frame_ref: string;
+  object_class: string;
+  object_color: string;
+  confidence: number;
+  dwell_time: number;
+}
+
+// ── Local display types ─────────────────────────────────────────────────────
+
+interface CameraInfo {
   id: string;
   name: string;
-  status: "online" | "offline";
-  zone: string;
   pos: { x: number; y: number };
 }
 
@@ -40,11 +81,13 @@ interface EventData {
   id: string;
   cameraId: string;
   time: string;
+  timestampIso: string;
   color: string;
   objClass: string;
-  confidence: number;
+  confidence: number; // 0-100
   trackId: string;
   dwell: string;
+  frameRef: string;
 }
 
 interface ChatMessage {
@@ -52,57 +95,26 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   events?: EventData[];
+  matchedCount?: number;
+  isError?: boolean;
   ts: string;
 }
 
-// ── Static Data ────────────────────────────────────────────────────────────────
+// ── Static config (real, not fictional) ─────────────────────────────────────
 
-const CAMERAS: CameraData[] = [
-  { id: "CAM-01", name: "North Entrance", status: "online",  zone: "A", pos: { x: 50, y: 9  } },
-  { id: "CAM-02", name: "East Corridor",  status: "online",  zone: "B", pos: { x: 82, y: 42 } },
-  { id: "CAM-03", name: "Plaza Center",   status: "online",  zone: "A", pos: { x: 50, y: 50 } },
-  { id: "CAM-04", name: "South Gate",     status: "offline", zone: "C", pos: { x: 50, y: 88 } },
-  { id: "CAM-05", name: "Parking Deck A", status: "online",  zone: "B", pos: { x: 16, y: 70 } },
-  { id: "CAM-06", name: "West Exit",      status: "online",  zone: "C", pos: { x: 12, y: 36 } },
+const REAL_CAMERAS: CameraInfo[] = [
+  { id: "cam_0", name: "WILDTRACK C1", pos: { x: 30, y: 50 } },
+  { id: "cam_1", name: "WILDTRACK C2", pos: { x: 70, y: 50 } },
 ];
 
-const EVENTS: EventData[] = [
-  { id: "EVT-001", cameraId: "CAM-01", time: "17:42:15", color: "red",    objClass: "backpack",  confidence: 92, trackId: "TRK-448", dwell: "0:23" },
-  { id: "EVT-002", cameraId: "CAM-02", time: "17:45:38", color: "red",    objClass: "backpack",  confidence: 88, trackId: "TRK-448", dwell: "1:12" },
-  { id: "EVT-003", cameraId: "CAM-03", time: "17:51:09", color: "red",    objClass: "backpack",  confidence: 79, trackId: "TRK-448", dwell: "2:47" },
-  { id: "EVT-004", cameraId: "CAM-01", time: "18:02:33", color: "blue",   objClass: "tote bag",  confidence: 95, trackId: "TRK-291", dwell: "0:08" },
-  { id: "EVT-005", cameraId: "CAM-05", time: "18:14:55", color: "red",    objClass: "backpack",  confidence: 61, trackId: "TRK-448", dwell: "0:41" },
-  { id: "EVT-006", cameraId: "CAM-06", time: "18:22:17", color: "black",  objClass: "duffel bag",confidence: 84, trackId: "TRK-512", dwell: "1:03" },
-  { id: "EVT-007", cameraId: "CAM-02", time: "18:31:44", color: "red",    objClass: "backpack",  confidence: 91, trackId: "TRK-448", dwell: "0:55" },
-  { id: "EVT-008", cameraId: "CAM-03", time: "18:38:22", color: "yellow", objClass: "backpack",  confidence: 73, trackId: "TRK-667", dwell: "0:19" },
-  { id: "EVT-009", cameraId: "CAM-06", time: "18:47:01", color: "red",    objClass: "backpack",  confidence: 85, trackId: "TRK-448", dwell: "0:34" },
-];
-
-const OBJECT_COLORS = ["red", "blue", "black", "yellow", "green", "orange", "white", "gray"];
-const OBJECT_CLASSES = ["backpack", "tote bag", "duffel bag", "jacket", "hat", "luggage"];
-
-const INITIAL_MESSAGES: ChatMessage[] = [
-  {
-    id: "m1",
-    role: "user",
-    content: "Show all red backpack detections after 6pm.",
-    ts: "18:45:00",
-  },
-  {
-    id: "m2",
-    role: "assistant",
-    content:
-      "Found 3 detections matching red backpack after 18:00. Track TRK-448 appears across CAM-05, CAM-02, and CAM-06 between 18:14 and 18:47. Confidence ranges from 61% to 91% — one detection flagged for manual review.",
-    events: EVENTS.filter((e) => e.color === "red" && timeToMinutes(e.time) >= 18 * 60),
-    ts: "18:45:02",
-  },
-];
+const OBJECT_COLORS = ["black", "blue", "red"];
+const OBJECT_CLASSES = ["suitcase", "jacket", "backpack"];
 
 const SUGGESTED_QUERIES = [
-  "Show all events after 6pm",
-  "Find anyone with a yellow bag",
-  "Trace full path of TRK-448",
-  "CAM-02 between 17:30–18:00",
+  "Where was person_003 seen across all cameras?",
+  "Show me anyone carrying a black suitcase",
+  "Who appeared on cam_1 with a blue jacket?",
+  "List all detections of person_001",
 ];
 
 const AUDIT_LOG = [
@@ -116,18 +128,58 @@ const AUDIT_LOG = [
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-function timeToMinutes(t: string): number {
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
+function nowTs(): string {
+  return new Date().toTimeString().slice(0, 8);
 }
 
-const TIME_START = 17 * 60;
-const TIME_END = 19 * 60;
-const TIME_SPAN = TIME_END - TIME_START;
+function isoTimeLabel(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toISOString().slice(11, 19);
+}
 
-function timeToPercent(t: string): number {
-  const mins = timeToMinutes(t);
-  return Math.max(0, Math.min(99, ((mins - TIME_START) / TIME_SPAN) * 100));
+function frameFilename(frameRef: string): string {
+  // frame_ref from the DB is stored as "cam_0/00001700.png" — the backend's
+  // /api/frames/{camera_id}/{frame_ref} route can't accept an embedded slash
+  // in the path param (confirmed live: passing it raw or %2F-encoded 404s at
+  // the routing layer before the handler's own basename() logic ever runs),
+  // so only the bare filename works.
+  const parts = frameRef.split("/");
+  return parts[parts.length - 1];
+}
+
+function frameUrl(cameraId: string, frameRef: string): string {
+  return `/api/frames/${encodeURIComponent(cameraId)}/${encodeURIComponent(frameFilename(frameRef))}`;
+}
+
+function toEventDataFromQuery(e: QueryEventMeta, idx: number): EventData {
+  return {
+    id: `${e.track_id}-${e.camera_id}-${e.timestamp}-${idx}`,
+    cameraId: e.camera_id,
+    time: isoTimeLabel(e.timestamp),
+    timestampIso: e.timestamp,
+    color: e.object_color,
+    objClass: e.object_class,
+    confidence: Math.round((e.confidence ?? 0) * 100),
+    trackId: e.track_id,
+    dwell: "—",
+    frameRef: e.frame_ref,
+  };
+}
+
+function toEventDataFromPerson(e: PersonEvent): EventData {
+  return {
+    id: e.id,
+    cameraId: e.camera_id,
+    time: isoTimeLabel(e.timestamp),
+    timestampIso: e.timestamp,
+    color: e.object_color,
+    objClass: e.object_class,
+    confidence: Math.round((e.confidence ?? 0) * 100),
+    trackId: e.track_id,
+    dwell: `${e.dwell_time}s`,
+    frameRef: e.frame_ref,
+  };
 }
 
 function confColor(score: number) {
@@ -157,7 +209,7 @@ function ConfBadge({ score }: { score: number }) {
 }
 
 function EventCard({ event, onClick }: { event: EventData; onClick: () => void }) {
-  const cam = CAMERAS.find((c) => c.id === event.cameraId);
+  const cam = REAL_CAMERAS.find((c) => c.id === event.cameraId);
   return (
     <button
       onClick={onClick}
@@ -174,7 +226,7 @@ function EventCard({ event, onClick }: { event: EventData; onClick: () => void }
               {event.color} {event.objClass}
             </div>
             <div className="font-mono text-[10px] text-muted-foreground mt-0.5">
-              {event.cameraId} · {cam?.name} · {event.time}
+              {event.cameraId} · {cam?.name ?? event.cameraId} · {event.time}
             </div>
           </div>
         </div>
@@ -187,9 +239,33 @@ function EventCard({ event, onClick }: { event: EventData; onClick: () => void }
   );
 }
 
+// Computes a dynamic time axis from whatever events are currently loaded,
+// since the real dataset's time window isn't the fixed 17:00-19:00 the
+// original mock assumed.
+function timeRangeOf(events: EventData[]): { start: number; end: number } {
+  if (events.length === 0) {
+    const now = Date.now();
+    return { start: now - 20 * 60 * 1000, end: now };
+  }
+  const times = events.map((e) => new Date(e.timestampIso).getTime()).filter((t) => !isNaN(t));
+  if (times.length === 0) {
+    const now = Date.now();
+    return { start: now - 20 * 60 * 1000, end: now };
+  }
+  const start = Math.min(...times);
+  const end = Math.max(...times);
+  return start === end ? { start: start - 60 * 1000, end: end + 60 * 1000 } : { start, end };
+}
+
 function TimelineView({ events, onEventClick }: { events: EventData[]; onEventClick: (e: EventData) => void }) {
-  const hours = [17, 18, 19];
-  const ticks = [0, 30, 60, 90, 120];
+  const { start, end } = timeRangeOf(events);
+  const span = end - start;
+  const toPercent = (iso: string) => {
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return 0;
+    return Math.max(0, Math.min(99, ((t - start) / span) * 100));
+  };
+  const ticks = [0, 0.25, 0.5, 0.75, 1];
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden p-4">
@@ -197,34 +273,25 @@ function TimelineView({ events, onEventClick }: { events: EventData[]; onEventCl
       <div className="flex ml-[140px] mb-1 pr-4">
         {ticks.map((t) => (
           <div key={t} className="flex-1 text-right font-mono text-[10px] text-muted-foreground">
-            {String(17 + Math.floor(t / 60)).padStart(2, "0")}:{String(t % 60).padStart(2, "0")}
+            {new Date(start + span * t).toISOString().slice(11, 19)}
           </div>
         ))}
       </div>
 
       <div className="space-y-1">
-        {CAMERAS.map((cam) => {
+        {REAL_CAMERAS.map((cam) => {
           const camEvents = events.filter((e) => e.cameraId === cam.id);
           return (
             <div key={cam.id} className="flex items-center gap-3 h-10">
               {/* Camera label */}
               <div className="w-[140px] shrink-0 flex items-center gap-2">
-                <span className={`w-1.5 h-1.5 rounded-full ${cam.status === "online" ? "bg-emerald-400" : "bg-red-400/60"}`} />
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                 <span className="font-mono text-[10px] text-muted-foreground">{cam.id}</span>
-                <span className="text-[10px] text-muted-foreground/60 truncate">{cam.name.split(" ")[0]}</span>
+                <span className="text-[10px] text-muted-foreground/60 truncate">{cam.name}</span>
               </div>
 
               {/* Track lane */}
               <div className="flex-1 relative h-8 bg-[#12161D] rounded border border-white/5">
-                {/* Hour grid lines */}
-                {hours.map((h) => (
-                  <div
-                    key={h}
-                    className="absolute inset-y-0 w-px bg-white/5"
-                    style={{ left: `${((h * 60 - TIME_START) / TIME_SPAN) * 100}%` }}
-                  />
-                ))}
-
                 {/* Events */}
                 {camEvents.map((evt) => {
                   const c = confColor(evt.confidence);
@@ -234,13 +301,12 @@ function TimelineView({ events, onEventClick }: { events: EventData[]; onEventCl
                       onClick={() => onEventClick(evt)}
                       title={`${evt.color} ${evt.objClass} — ${evt.confidence}% confidence`}
                       className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-10 group"
-                      style={{ left: `${timeToPercent(evt.time)}%` }}
+                      style={{ left: `${toPercent(evt.timestampIso)}%` }}
                     >
                       <span
                         className="block w-3 h-3 rounded-full border-2 border-[#0B0E13] transition-transform group-hover:scale-150"
                         style={{ backgroundColor: objDot(evt.color) }}
                       />
-                      {/* confidence tick below */}
                       <span
                         className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-0.5 h-1.5 rounded"
                         style={{ backgroundColor: c.bar }}
@@ -254,10 +320,17 @@ function TimelineView({ events, onEventClick }: { events: EventData[]; onEventCl
         })}
       </div>
 
+      {events.length === 0 && (
+        <div className="mt-8 flex flex-col items-center py-6 text-center">
+          <Search className="w-6 h-6 text-muted-foreground/20 mb-2" />
+          <span className="text-[11px] text-muted-foreground/50">Run a query or select an identity to see events here</span>
+        </div>
+      )}
+
       {/* Legend */}
       <div className="mt-6 flex items-center gap-6 ml-[152px] flex-wrap">
         <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Object color</span>
-        {["red", "blue", "black", "yellow"].map((c) => (
+        {OBJECT_COLORS.map((c) => (
           <div key={c} className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-full border border-[#0B0E13]" style={{ backgroundColor: objDot(c) }} />
             <span className="text-[10px] text-muted-foreground capitalize">{c}</span>
@@ -276,74 +349,58 @@ function TimelineView({ events, onEventClick }: { events: EventData[]; onEventCl
   );
 }
 
-// TRK-448 path order: CAM-01 → CAM-02 → CAM-03 → CAM-05 → CAM-02 → CAM-06
-const TRK_448_PATH = ["CAM-01", "CAM-02", "CAM-03", "CAM-05", "CAM-02", "CAM-06"];
-
-function MapView({ events, onEventClick }: { events: EventData[]; onEventClick: (e: EventData) => void }) {
-  const pathCams = TRK_448_PATH.map((id) => CAMERAS.find((c) => c.id === id)!);
+function MapView({ events, activeSource, onEventClick }: { events: EventData[]; activeSource: string | null; onEventClick: (e: EventData) => void }) {
+  const cam0 = REAL_CAMERAS[0];
+  const cam1 = REAL_CAMERAS[1];
+  const camerasWithEvents = new Set(events.map((e) => e.cameraId));
+  const spansBoth = camerasWithEvents.has("cam_0") && camerasWithEvents.has("cam_1");
+  const trackLabel = events[0]?.trackId;
 
   return (
     <div className="flex-1 relative overflow-hidden bg-[#0D1118] p-4">
       <div className="absolute inset-4 rounded border border-white/6">
         <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-          {/* Floor plan outline */}
           <rect x="5" y="5" width="90" height="90" rx="1" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
-          {/* Internal zones */}
-          <rect x="30" y="30" width="40" height="40" rx="0.5" fill="rgba(61,184,255,0.02)" stroke="rgba(61,184,255,0.06)" strokeWidth="0.4" strokeDasharray="2 1.5" />
-          <text x="50" y="52" textAnchor="middle" fill="rgba(61,184,255,0.15)" fontSize="3" fontFamily="monospace">PLAZA ZONE A</text>
-          {/* Corridors */}
-          <rect x="5" y="44" width="25" height="12" fill="rgba(255,255,255,0.01)" stroke="rgba(255,255,255,0.03)" strokeWidth="0.3" />
-          <rect x="70" y="44" width="25" height="12" fill="rgba(255,255,255,0.01)" stroke="rgba(255,255,255,0.03)" strokeWidth="0.3" />
-          <rect x="44" y="5" width="12" height="25" fill="rgba(255,255,255,0.01)" stroke="rgba(255,255,255,0.03)" strokeWidth="0.3" />
-          <rect x="44" y="70" width="12" height="25" fill="rgba(255,255,255,0.01)" stroke="rgba(255,255,255,0.03)" strokeWidth="0.3" />
 
-          {/* TRK-448 dotted path */}
-          {pathCams.slice(0, -1).map((cam, i) => {
-            const next = pathCams[i + 1];
-            return (
-              <line
-                key={i}
-                x1={cam.pos.x} y1={cam.pos.y}
-                x2={next.pos.x} y2={next.pos.y}
-                stroke="#3DB8FF"
-                strokeWidth="0.6"
-                strokeDasharray="1.5 1"
-                strokeOpacity="0.5"
-              />
-            );
-          })}
+          {/* Cross-camera link, only drawn when the loaded events actually span both real cameras */}
+          {spansBoth && (
+            <line
+              x1={cam0.pos.x} y1={cam0.pos.y}
+              x2={cam1.pos.x} y2={cam1.pos.y}
+              stroke="#3DB8FF"
+              strokeWidth="0.6"
+              strokeDasharray="1.5 1"
+              strokeOpacity="0.5"
+            />
+          )}
 
-          {/* Camera icons */}
-          {CAMERAS.map((cam) => {
+          {REAL_CAMERAS.map((cam) => {
             const camEvents = events.filter((e) => e.cameraId === cam.id);
             const isActive = camEvents.length > 0;
             return (
               <g key={cam.id}>
                 {isActive && (
-                  <circle
-                    cx={cam.pos.x} cy={cam.pos.y} r="3.5"
-                    fill="rgba(61,184,255,0.08)"
-                    stroke="rgba(61,184,255,0.3)"
-                    strokeWidth="0.4"
-                  />
+                  <circle cx={cam.pos.x} cy={cam.pos.y} r="5" fill="rgba(61,184,255,0.08)" stroke="rgba(61,184,255,0.3)" strokeWidth="0.4" />
                 )}
                 <circle
-                  cx={cam.pos.x} cy={cam.pos.y} r="2"
-                  fill={cam.status === "offline" ? "#1A1F29" : "#12161D"}
-                  stroke={cam.status === "offline" ? "rgba(248,113,113,0.5)" : isActive ? "#3DB8FF" : "rgba(255,255,255,0.12)"}
+                  cx={cam.pos.x} cy={cam.pos.y} r="2.4"
+                  fill="#12161D"
+                  stroke={isActive ? "#3DB8FF" : "rgba(255,255,255,0.12)"}
                   strokeWidth="0.4"
                 />
-                <text x={cam.pos.x} y={cam.pos.y + 0.7} textAnchor="middle" fill={cam.status === "offline" ? "#F87171" : isActive ? "#3DB8FF" : "rgba(255,255,255,0.3)"} fontSize="1.8" fontFamily="monospace">
+                <text x={cam.pos.x} y={cam.pos.y + 0.7} textAnchor="middle" fill={isActive ? "#3DB8FF" : "rgba(255,255,255,0.3)"} fontSize="2" fontFamily="monospace">
                   ◈
                 </text>
-                <text x={cam.pos.x} y={cam.pos.y + 5} textAnchor="middle" fill="rgba(255,255,255,0.35)" fontSize="1.8" fontFamily="monospace">
+                <text x={cam.pos.x} y={cam.pos.y + 6} textAnchor="middle" fill="rgba(255,255,255,0.4)" fontSize="2" fontFamily="monospace">
                   {cam.id}
                 </text>
+                <text x={cam.pos.x} y={cam.pos.y + 9} textAnchor="middle" fill="rgba(255,255,255,0.25)" fontSize="1.6" fontFamily="monospace">
+                  {cam.name}
+                </text>
 
-                {/* Event dots */}
                 {camEvents.map((evt, ei) => {
                   const angle = (ei / Math.max(camEvents.length, 1)) * Math.PI * 2;
-                  const r = 4;
+                  const r = 5;
                   return (
                     <circle
                       key={evt.id}
@@ -363,25 +420,73 @@ function MapView({ events, onEventClick }: { events: EventData[]; onEventClick: 
           })}
         </svg>
 
-        {/* Track legend */}
-        <div className="absolute bottom-3 left-3 flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <svg width="20" height="6" viewBox="0 0 20 6"><line x1="0" y1="3" x2="20" y2="3" stroke="#3DB8FF" strokeWidth="1.5" strokeDasharray="4 2" strokeOpacity="0.7" /></svg>
-            <span className="font-mono text-[10px] text-[#3DB8FF]/70">TRK-448</span>
+        {events.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <Search className="w-6 h-6 text-muted-foreground/20 mb-2" />
+            <span className="text-[11px] text-muted-foreground/50">Run a query or select an identity to see events here</span>
           </div>
-          <div className="w-px h-3 bg-white/10" />
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#EF4444]" />
-            <span className="font-mono text-[10px] text-muted-foreground">red backpack</span>
+        )}
+
+        {trackLabel && (
+          <div className="absolute bottom-3 left-3 flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[10px] text-[#3DB8FF]/70">{activeSource ?? trackLabel}</span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
 
-function EventDetailModal({ event, onClose }: { event: EventData; onClose: () => void }) {
-  const cam = CAMERAS.find((c) => c.id === event.cameraId);
+function FrameImage({ cameraId, frameRef, cam1FramesAvailable }: { cameraId: string; frameRef: string; cam1FramesAvailable: boolean | null }) {
+  const [state, setState] = useState<"loading" | "loaded" | "error">("loading");
+  const unavailable = cameraId === "cam_1" && cam1FramesAvailable === false;
+
+  useEffect(() => {
+    setState("loading");
+  }, [cameraId, frameRef]);
+
+  if (unavailable) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center p-4">
+        <div className="text-center max-w-xs">
+          <AlertCircle className="w-6 h-6 text-amber-400/60 mx-auto mb-2" />
+          <span className="font-mono text-[10px] text-amber-400/70 leading-relaxed">
+            cam_1 source frames not available in this environment (WILDTRACK C2 was not provided).
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {state !== "loaded" && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          {state === "loading" ? (
+            <Loader2 className="w-6 h-6 text-white/20 animate-spin" />
+          ) : (
+            <div className="text-center">
+              <Camera className="w-8 h-8 text-white/10 mx-auto mb-2" />
+              <span className="font-mono text-[10px] text-muted-foreground/40">Frame image failed to load</span>
+            </div>
+          )}
+        </div>
+      )}
+      <img
+        src={frameUrl(cameraId, frameRef)}
+        alt={`Frame ${frameRef} from ${cameraId}`}
+        className={`absolute inset-0 w-full h-full object-contain transition-opacity ${state === "loaded" ? "opacity-100" : "opacity-0"}`}
+        onLoad={() => setState("loaded")}
+        onError={() => setState("error")}
+      />
+    </>
+  );
+}
+
+function EventDetailModal({ event, cam1FramesAvailable, onClose }: { event: EventData; cam1FramesAvailable: boolean | null; onClose: () => void }) {
+  const cam = REAL_CAMERAS.find((c) => c.id === event.cameraId);
   const c = confColor(event.confidence);
   const [reviewed, setReviewed] = useState<"confirmed" | "rejected" | null>(null);
 
@@ -409,57 +514,26 @@ function EventDetailModal({ event, onClose }: { event: EventData; onClose: () =>
           </button>
         </div>
 
-        {/* Detection thumbnail */}
+        {/* Detection frame (real image, wired to the corrected /api/frames endpoint) */}
         <div className="mx-4 mt-4 relative bg-[#0B0E13] rounded-sm overflow-hidden aspect-video flex items-center justify-center border border-white/6">
-          {/* Simulated camera frame */}
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="text-center">
-              <Camera className="w-8 h-8 text-white/10 mx-auto mb-2" />
-              <span className="font-mono text-[10px] text-muted-foreground/40">FRAME CAPTURE</span>
-            </div>
-          </div>
-          {/* Bounding box overlay */}
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div
-              className="w-20 h-28 border-2 relative"
-              style={{ borderColor: c.bar }}
-            >
-              <span
-                className="absolute -top-5 left-0 font-mono text-[9px] px-1 py-0.5 rounded-sm"
-                style={{ backgroundColor: c.bar, color: "#0B0E13" }}
-              >
-                {event.color} {event.objClass} · {event.confidence}%
-              </span>
-              <span
-                className="absolute -bottom-[1px] -right-[1px] w-2 h-2 border-r-2 border-b-2"
-                style={{ borderColor: c.bar }}
-              />
-              <span
-                className="absolute -bottom-[1px] -left-[1px] w-2 h-2 border-l-2 border-b-2"
-                style={{ borderColor: c.bar }}
-              />
-            </div>
-          </div>
-          {/* Camera ID watermark */}
-          <div className="absolute top-2 left-2 font-mono text-[9px] text-white/25">{event.cameraId} · {cam?.name}</div>
-          {/* No facial recognition badge */}
+          <FrameImage cameraId={event.cameraId} frameRef={event.frameRef} cam1FramesAvailable={cam1FramesAvailable} />
+          <div className="absolute top-2 left-2 font-mono text-[9px] text-white/25">{event.cameraId} · {cam?.name ?? event.cameraId}</div>
           <div className="absolute top-2 right-2 flex items-center gap-1 bg-[#0B0E13]/80 border border-emerald-400/20 rounded px-1.5 py-0.5">
             <EyeOff className="w-2.5 h-2.5 text-emerald-400" />
             <span className="font-mono text-[8px] text-emerald-400">NO FACE ID</span>
           </div>
-          {/* Timestamp */}
-          <div className="absolute bottom-2 right-2 font-mono text-[9px] text-white/25">2024-01-15 {event.time}</div>
+          <div className="absolute bottom-2 right-2 font-mono text-[9px] text-white/25">{event.time}</div>
         </div>
 
         {/* Metadata grid */}
         <div className="grid grid-cols-2 gap-px bg-white/5 m-4 mt-3 rounded-sm overflow-hidden">
           {[
-            { label: "Timestamp",    value: `2024-01-15 ${event.time}` },
-            { label: "Camera",       value: `${event.cameraId} — ${cam?.name}` },
+            { label: "Timestamp",    value: event.timestampIso },
+            { label: "Camera",       value: `${event.cameraId} — ${cam?.name ?? event.cameraId}` },
             { label: "Object",       value: `${event.color} ${event.objClass}`, colored: true },
             { label: "Track ID",     value: event.trackId },
-            { label: "Dwell time",   value: `${event.dwell}s` },
-            { label: "Zone",         value: cam?.zone ? `Zone ${cam.zone}` : "—" },
+            { label: "Dwell time",   value: event.dwell },
+            { label: "Frame ref",    value: event.frameRef },
           ].map(({ label, value, colored }) => (
             <div key={label} className="bg-[#12161D] px-3 py-2">
               <div className="text-[9px] uppercase tracking-wider text-muted-foreground/60 mb-0.5">{label}</div>
@@ -532,7 +606,6 @@ function EventDetailModal({ event, onClose }: { event: EventData; onClose: () =>
 
 function PrivacyPanel({ onClose }: { onClose: () => void }) {
   const [faceBlur, setFaceBlur] = useState(true);
-  const [logExpanded, setLogExpanded] = useState(true);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
@@ -631,18 +704,40 @@ export default function App() {
   const [activeTab, setActiveTab]         = useState<"timeline" | "map">("timeline");
   const [selectedEvent, setSelectedEvent] = useState<EventData | null>(null);
   const [showPrivacy, setShowPrivacy]     = useState(false);
-  const [messages, setMessages]           = useState<ChatMessage[]>(INITIAL_MESSAGES);
+  const [messages, setMessages]           = useState<ChatMessage[]>([]);
   const [query, setQuery]                 = useState("");
   const [activeColors, setActiveColors]   = useState<string[]>([]);
   const [activeClasses, setActiveClasses] = useState<string[]>([]);
-  const [dateRange]                       = useState("2024-01-15 · 17:00 – 19:00");
-  const [isTyping, setIsTyping]           = useState(false);
+  const [isQuerying, setIsQuerying]       = useState(false);
   const chatEndRef                        = useRef<HTMLDivElement>(null);
   const queryRef                          = useRef<HTMLTextAreaElement>(null);
 
+  // Backend connectivity
+  const [backendStatus, setBackendStatus] = useState<"checking" | "online" | "offline">("checking");
+
+  // Real identities (from /api/identities)
+  const [identities, setIdentities]           = useState<IdentitySummary[]>([]);
+  const [identitiesLoading, setIdentitiesLoading] = useState(true);
+  const [identitiesError, setIdentitiesError] = useState<string | null>(null);
+
+  // Selected identity detail (from /api/person/{track_id})
+  const [selectedIdentity, setSelectedIdentity] = useState<string | null>(null);
+  const [personLoading, setPersonLoading]        = useState(false);
+  const [personError, setPersonError]            = useState<string | null>(null);
+
+  // Whichever events are currently driving Timeline/Map — from the last chat
+  // query or the last identity click, whichever happened most recently.
+  const [activeEvents, setActiveEvents] = useState<EventData[]>([]);
+  const [activeSource, setActiveSource] = useState<string | null>(null);
+
+  // Whether cam_1 (WILDTRACK C2) frame images are actually servable in this
+  // environment — probed once against the corrected /api/frames endpoint
+  // rather than assumed.
+  const [cam1FramesAvailable, setCam1FramesAvailable] = useState<boolean | null>(null);
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+  }, [messages, isQuerying]);
 
   useEffect(() => {
     const handler = (e: globalThis.KeyboardEvent) => {
@@ -655,7 +750,51 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const filteredEvents = EVENTS.filter((e) => {
+  // Load identities + check backend connectivity on mount
+  useEffect(() => {
+    fetch("/api/identities")
+      .then((res) => {
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        return res.json();
+      })
+      .then((data: { identities: IdentitySummary[] }) => {
+        setIdentities(data.identities);
+        setBackendStatus("online");
+      })
+      .catch((err) => {
+        setIdentitiesError(err instanceof Error ? err.message : String(err));
+        setBackendStatus("offline");
+      })
+      .finally(() => setIdentitiesLoading(false));
+
+    // Probe cam_1 frame availability: /api/frames/cam_1/{anything} returns
+    // 503 specifically when the C2_IMAGES_DIR is absent, regardless of
+    // filename, so this doesn't need a real frame_ref. Uses GET, not HEAD —
+    // confirmed live that this FastAPI route 405s on HEAD (doesn't auto-add
+    // it the way Starlette usually does for GET-only routes).
+    fetch("/api/frames/cam_1/__probe__.png", { method: "GET" })
+      .then((res) => setCam1FramesAvailable(res.status !== 503))
+      .catch(() => setCam1FramesAvailable(false));
+  }, []);
+
+  const selectIdentity = async (trackId: string) => {
+    setSelectedIdentity(trackId);
+    setPersonLoading(true);
+    setPersonError(null);
+    try {
+      const res = await fetch(`/api/person/${encodeURIComponent(trackId)}`);
+      if (!res.ok) throw new Error(`Backend returned ${res.status}`);
+      const data: { track_id: string; total_events: number; events: PersonEvent[] } = await res.json();
+      setActiveEvents(data.events.map(toEventDataFromPerson));
+      setActiveSource(`Identity: ${trackId}`);
+    } catch (err) {
+      setPersonError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPersonLoading(false);
+    }
+  };
+
+  const filteredEvents = activeEvents.filter((e) => {
     const colorMatch  = activeColors.length  === 0 || activeColors.includes(e.color);
     const classMatch  = activeClasses.length === 0 || activeClasses.includes(e.objClass);
     return colorMatch && classMatch;
@@ -666,29 +805,56 @@ export default function App() {
   const toggleClass = (c: string) =>
     setActiveClasses((prev) => prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]);
 
-  const sendQuery = (text: string) => {
-    if (!text.trim()) return;
-    const userMsg: ChatMessage = { id: `m${Date.now()}`, role: "user", content: text.trim(), ts: new Date().toTimeString().slice(0, 8) };
+  const sendQuery = async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || isQuerying) return;
+
+    const userMsg: ChatMessage = { id: `m${Date.now()}`, role: "user", content: trimmed, ts: nowTs() };
     setMessages((prev) => [...prev, userMsg]);
     setQuery("");
-    setIsTyping(true);
+    setIsQuerying(true);
 
-    setTimeout(() => {
-      setIsTyping(false);
-      const matchedEvents = filteredEvents.filter(
-        (e) => text.toLowerCase().includes(e.color) || text.toLowerCase().includes("all") || text.toLowerCase().includes(e.objClass)
-      );
+    try {
+      const res = await fetch("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: trimmed }),
+      });
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}`);
+      }
+      const data: QueryResponse = await res.json();
+      const events = data.events.map(toEventDataFromQuery);
+
+      setBackendStatus("online");
+      if (events.length > 0) {
+        setActiveEvents(events);
+        setActiveSource(`Query: "${trimmed}"`);
+      }
+
       const assistantMsg: ChatMessage = {
         id: `m${Date.now() + 1}`,
         role: "assistant",
-        content: matchedEvents.length > 0
-          ? `Found ${matchedEvents.length} detection${matchedEvents.length > 1 ? "s" : ""} matching your query across ${[...new Set(matchedEvents.map((e) => e.cameraId))].join(", ")}. Review source events below.`
-          : "No events matched your query in the current date range and filter set. Try broadening the time window or object filters.",
-        events: matchedEvents.length > 0 ? matchedEvents : undefined,
-        ts: new Date().toTimeString().slice(0, 8),
+        content: data.summary,
+        events: events.length > 0 ? events : undefined,
+        matchedCount: data.matched_events_count,
+        ts: nowTs(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
-    }, 1400);
+    } catch (err) {
+      setBackendStatus("offline");
+      const message = err instanceof Error ? err.message : String(err);
+      const errorMsg: ChatMessage = {
+        id: `m${Date.now() + 1}`,
+        role: "assistant",
+        content: `Query failed: ${message}. Confirm the backend is running at http://localhost:8000 and try again.`,
+        isError: true,
+        ts: nowTs(),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+    } finally {
+      setIsQuerying(false);
+    }
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -697,8 +863,6 @@ export default function App() {
       sendQuery(query);
     }
   };
-
-  const onlineCameras = CAMERAS.filter((c) => c.status === "online").length;
 
   return (
     <div className="h-screen flex flex-col bg-background text-foreground overflow-hidden" style={{ fontFamily: "var(--font-sans)" }}>
@@ -715,8 +879,8 @@ export default function App() {
           </div>
           <div className="w-px h-4 bg-white/8" />
           <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="font-mono text-[11px] text-foreground/70">{onlineCameras}/{CAMERAS.length} cameras online</span>
+            <span className={`w-1.5 h-1.5 rounded-full ${backendStatus === "online" ? "bg-emerald-400 animate-pulse" : backendStatus === "offline" ? "bg-red-400" : "bg-amber-400 animate-pulse"}`} />
+            <span className="font-mono text-[11px] text-foreground/70">2/2 cameras registered (cam_1 frames unavailable)</span>
           </div>
         </div>
 
@@ -727,17 +891,16 @@ export default function App() {
             <span className="font-mono text-[9px] uppercase tracking-wider text-emerald-400">No facial recognition</span>
           </div>
 
-          {/* Cost indicator */}
-          <div className="flex items-center gap-1.5 border border-white/8 px-2 py-1 rounded-sm">
-            <Zap className="w-3 h-3 text-amber-400/70" />
-            <span className="font-mono text-[10px] text-muted-foreground">$0.024</span>
-            <span className="font-mono text-[9px] text-muted-foreground/40">/ session</span>
-          </div>
-
-          {/* Connection status */}
+          {/* Connection status — reflects a real /api/identities probe */}
           <div className="flex items-center gap-1.5">
-            <Wifi className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="font-mono text-[10px] text-muted-foreground">CONNECTED</span>
+            {backendStatus === "online" ? (
+              <Wifi className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <WifiOff className="w-3.5 h-3.5 text-red-400" />
+            )}
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {backendStatus === "checking" ? "CONNECTING…" : backendStatus === "online" ? "CONNECTED" : "BACKEND UNREACHABLE"}
+            </span>
           </div>
 
           <button
@@ -755,34 +918,89 @@ export default function App() {
         {/* ── Left Sidebar ─────────────────────────────────────────────── */}
         <aside className="w-[220px] shrink-0 border-r border-border bg-[#0D1118] flex flex-col overflow-y-auto">
 
-          {/* Camera list */}
+          {/* Camera list — real cam_0 / cam_1, not a fictional 6-camera layout */}
           <div className="p-3 border-b border-border">
             <div className="flex items-center gap-2 mb-2">
               <Camera className="w-3 h-3 text-muted-foreground" />
               <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">Cameras</span>
             </div>
             <div className="space-y-0.5">
-              {CAMERAS.map((cam) => (
-                <div key={cam.id} className="flex items-center gap-2 px-1.5 py-1.5 rounded-sm hover:bg-white/4 cursor-pointer group">
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cam.status === "online" ? "bg-emerald-400" : "bg-red-400/50"}`} />
-                  <div className="min-w-0 flex-1">
-                    <div className="font-mono text-[10px] text-foreground/80 truncate">{cam.id}</div>
-                    <div className="text-[9px] text-muted-foreground/50 truncate">{cam.name}</div>
+              {REAL_CAMERAS.map((cam) => {
+                const framesOk = cam.id === "cam_0" ? true : cam1FramesAvailable;
+                return (
+                  <div key={cam.id} className="flex items-center gap-2 px-1.5 py-1.5 rounded-sm hover:bg-white/4 group">
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-emerald-400" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-mono text-[10px] text-foreground/80 truncate">{cam.id}</div>
+                      <div className="text-[9px] text-muted-foreground/50 truncate">{cam.name}</div>
+                    </div>
+                    {framesOk === false && (
+                      <span title="Frame images not available in this environment">
+                        <WifiOff className="w-2.5 h-2.5 text-amber-400/60 shrink-0" />
+                      </span>
+                    )}
                   </div>
-                  {cam.status === "offline" && <WifiOff className="w-2.5 h-2.5 text-red-400/50 shrink-0" />}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
-          {/* Date / time range */}
+          {/* Identities — real data from /api/identities */}
+          <div className="p-3 border-b border-border">
+            <div className="flex items-center gap-2 mb-2">
+              <Users className="w-3 h-3 text-muted-foreground" />
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">Verified identities</span>
+            </div>
+            {identitiesLoading ? (
+              <div className="flex items-center gap-2 py-2 text-muted-foreground/50">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span className="text-[10px]">Loading…</span>
+              </div>
+            ) : identitiesError ? (
+              <div className="flex items-start gap-1.5 py-1 text-red-400/80">
+                <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
+                <span className="text-[10px]">{identitiesError}</span>
+              </div>
+            ) : (
+              <div className="space-y-0.5">
+                {identities.map((id) => (
+                  <button
+                    key={id.track_id}
+                    onClick={() => selectIdentity(id.track_id)}
+                    className={`w-full text-left flex items-center gap-2 px-1.5 py-1.5 rounded-sm transition-colors ${
+                      selectedIdentity === id.track_id ? "bg-[#3DB8FF]/10 border border-[#3DB8FF]/30" : "hover:bg-white/4 border border-transparent"
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="font-mono text-[10px] text-foreground/80 truncate">{id.track_id}</div>
+                      <div className="text-[9px] text-muted-foreground/50 truncate">
+                        {id.total_events} events · {id.cameras.join(", ")}
+                      </div>
+                    </div>
+                    {personLoading && selectedIdentity === id.track_id && (
+                      <Loader2 className="w-3 h-3 animate-spin text-[#3DB8FF]" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {personError && (
+              <div className="flex items-start gap-1.5 mt-1.5 py-1 text-red-400/80">
+                <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
+                <span className="text-[10px]">{personError}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Verified demo window */}
           <div className="p-3 border-b border-border">
             <div className="flex items-center gap-2 mb-2">
               <Clock className="w-3 h-3 text-muted-foreground" />
-              <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">Date range</span>
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">Verified window</span>
             </div>
             <div className="bg-[#12161D] border border-white/6 rounded-sm px-2 py-1.5">
-              <div className="font-mono text-[10px] text-foreground/80">{dateRange}</div>
+              <div className="font-mono text-[10px] text-foreground/80">frames 00001700–00001900</div>
+              <div className="text-[9px] text-muted-foreground/50 mt-0.5">only window with ground-truth-verified cross-camera links</div>
             </div>
           </div>
 
@@ -845,13 +1063,6 @@ export default function App() {
                 Clear filters
               </button>
             )}
-
-            {/* Active filter / query sync indicator */}
-            {(activeColors.length > 0 || activeClasses.length > 0) && (
-              <div className="mt-3 px-2 py-1.5 bg-[#3DB8FF]/5 border border-[#3DB8FF]/15 rounded-sm">
-                <div className="text-[9px] text-[#3DB8FF]/70">Filters applied — queries will use this scope</div>
-              </div>
-            )}
           </div>
         </aside>
 
@@ -879,7 +1090,7 @@ export default function App() {
             ))}
             <div className="ml-auto flex items-center gap-2 pb-0.5">
               <span className="font-mono text-[10px] text-muted-foreground/50">
-                {filteredEvents.length} events
+                {activeSource ? `${activeSource} · ` : ""}{filteredEvents.length} events
                 {(activeColors.length > 0 || activeClasses.length > 0) && " (filtered)"}
               </span>
             </div>
@@ -890,7 +1101,7 @@ export default function App() {
             {activeTab === "timeline" ? (
               <TimelineView events={filteredEvents} onEventClick={setSelectedEvent} />
             ) : (
-              <MapView events={filteredEvents} onEventClick={setSelectedEvent} />
+              <MapView events={filteredEvents} activeSource={activeSource} onEventClick={setSelectedEvent} />
             )}
           </div>
         </main>
@@ -909,6 +1120,14 @@ export default function App() {
 
           {/* Message thread */}
           <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4" style={{ scrollbarWidth: "none" }}>
+            {messages.length === 0 && (
+              <div className="flex flex-col items-center py-8 text-center">
+                <Activity className="w-6 h-6 text-muted-foreground/20 mb-2" />
+                <span className="text-[11px] text-muted-foreground/50 max-w-[220px]">
+                  Ask about tracked identities across cam_0 and cam_1 — try one of the suggestions below.
+                </span>
+              </div>
+            )}
             {messages.map((msg) => (
               <div key={msg.id}>
                 {msg.role === "user" ? (
@@ -923,10 +1142,17 @@ export default function App() {
                 ) : (
                   <div className="flex flex-col gap-2">
                     <div className="flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#3DB8FF]" />
-                      <span className="font-mono text-[9px] text-[#3DB8FF]/60 uppercase tracking-wider">Copilot · {msg.ts}</span>
+                      <span className={`w-1.5 h-1.5 rounded-full ${msg.isError ? "bg-red-400" : "bg-[#3DB8FF]"}`} />
+                      <span className={`font-mono text-[9px] uppercase tracking-wider ${msg.isError ? "text-red-400/70" : "text-[#3DB8FF]/60"}`}>
+                        Copilot · {msg.ts}
+                      </span>
                     </div>
-                    <div className="bg-[#12161D] border border-white/6 rounded-sm px-3 py-2 text-[12px] text-foreground/90 leading-relaxed">
+                    <div className={`rounded-sm px-3 py-2 text-[12px] leading-relaxed ${
+                      msg.isError
+                        ? "bg-red-400/5 border border-red-400/20 text-red-300"
+                        : "bg-[#12161D] border border-white/6 text-foreground/90"
+                    }`}>
+                      {msg.isError && <AlertCircle className="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5" />}
                       {msg.content}
                     </div>
                     {/* Source event cards */}
@@ -941,13 +1167,13 @@ export default function App() {
                       </div>
                     )}
                     {/* No results empty state */}
-                    {msg.events === undefined && msg.role === "assistant" && msg.content.startsWith("No events") && (
+                    {!msg.isError && msg.matchedCount === 0 && (
                       <div className="flex flex-col items-center py-6 bg-[#12161D] border border-white/6 rounded-sm">
                         <Search className="w-6 h-6 text-muted-foreground/20 mb-2" />
                         <span className="text-[11px] text-muted-foreground/50 text-center max-w-[180px]">
                           No matching events found in the current scope
                         </span>
-                        <span className="text-[10px] text-muted-foreground/30 mt-1">Try broadening filters or date range</span>
+                        <span className="text-[10px] text-muted-foreground/30 mt-1">Try broadening the query — the demo dataset only covers person_001–004, cam_0/cam_1, frames 00001700–00001900</span>
                       </div>
                     )}
                   </div>
@@ -955,8 +1181,8 @@ export default function App() {
               </div>
             ))}
 
-            {/* Typing indicator */}
-            {isTyping && (
+            {/* Loading indicator while /api/query is in flight */}
+            {isQuerying && (
               <div className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#3DB8FF]" />
                 <div className="bg-[#12161D] border border-white/6 rounded-sm px-3 py-2 flex items-center gap-1.5">
@@ -980,7 +1206,8 @@ export default function App() {
                 <button
                   key={q}
                   onClick={() => sendQuery(q)}
-                  className="text-[10px] px-2 py-0.5 rounded-sm border border-white/8 text-muted-foreground/70 hover:border-[#3DB8FF]/30 hover:text-[#3DB8FF] transition-colors"
+                  disabled={isQuerying}
+                  className="text-[10px] px-2 py-0.5 rounded-sm border border-white/8 text-muted-foreground/70 hover:border-[#3DB8FF]/30 hover:text-[#3DB8FF] transition-colors disabled:opacity-30"
                 >
                   {q}
                 </button>
@@ -1007,10 +1234,10 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => sendQuery(query)}
-                  disabled={!query.trim()}
+                  disabled={!query.trim() || isQuerying}
                   className="p-1.5 rounded bg-[#3DB8FF] text-[#0B0E13] hover:bg-[#5DC8FF] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 >
-                  <Send className="w-3.5 h-3.5" />
+                  {isQuerying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                 </button>
               </div>
             </div>
@@ -1025,7 +1252,7 @@ export default function App() {
       </div>
 
       {/* ── Modals ───────────────────────────────────────────────────────── */}
-      {selectedEvent && <EventDetailModal event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
+      {selectedEvent && <EventDetailModal event={selectedEvent} cam1FramesAvailable={cam1FramesAvailable} onClose={() => setSelectedEvent(null)} />}
       {showPrivacy   && <PrivacyPanel onClose={() => setShowPrivacy(false)} />}
     </div>
   );
